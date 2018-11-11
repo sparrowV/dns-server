@@ -1,10 +1,31 @@
 import sys
 import socket
 from struct import *
+import random
+import os
+from easyzone import easyzone
 
 ip = "127.0.0.1"
 port = 53
 buffer_size = 2048
+
+def name_to_bytes(name):
+    name_parts = name.split(".")
+    bytes = None
+    for elem in name_parts:
+        if(elem!=""):
+            if(bytes == None):
+                bytes = (len(elem)).to_bytes(1,byteorder="big")
+                for ch in elem:
+                    bytes+=(ord(ch)).to_bytes(1,byteorder="big")
+            else:
+                bytes+=(len(elem)).to_bytes(1,byteorder="big")
+                for ch in elem:
+                    bytes += (ord(ch)).to_bytes(1, byteorder="big")
+
+    bytes+=(0).to_bytes(1,byteorder="big")
+
+    return bytes
 
 def parse_dns_question(question):
     fields = {}
@@ -29,13 +50,86 @@ def parse_dns_question(question):
     print(fields)
     return fields
 
+def get_name_index(question):
+    i = 0
+    domain_name = ""
+    while (question[i] != 0):
+        length = question[i]
+        domain_name += question[i + 1:i + length + 1].decode("utf-8") + "."
+        i += (length + 1)
+    return i+1
+
+def replace_id(id,header):
+   return  (id).to_bytes(2, byteorder='big') + header[2:]
+
+def replace_name(name,question):
+    i =  get_name_index(question)
+    query = (0).to_bytes(1, byteorder="big")
+    name_parts = name.split(".")
+    for part in name_parts:
+        if (part != ""):
+            length = (len(part)).to_bytes(1, byteorder='big')
+            query += length
+            #print(length)
+            for ch in part:
+                #print(hex(ord(ch)))
+                query += (ord(ch)).to_bytes(1, byteorder='big')
+
+            print("-------")
+    query += (0).to_bytes(1, byteorder='big')
+    query = query[1:]
+
+    return query + question[i:]
+
+
+
+
+def make_dns_question(name):
+    id = random.randint(128, 65000)
+    query = (id).to_bytes(2, byteorder='big')
+
+    second_line = int('0b0000000100100000', 2).to_bytes(2, byteorder='big')
+    query += second_line
+    print(query)
+
+    qdcount = (1).to_bytes(2, byteorder='big')
+    query += qdcount
+    ancount = (0).to_bytes(2, byteorder='big')
+
+    query += ancount
+    nscount = (0).to_bytes(2, byteorder='big')
+
+    query += nscount
+    arcount = (0).to_bytes(2, byteorder='big')
+
+    query += arcount
+
+    name_parts = name.split('.')
+    print("----------")
+    #print(query)
+    for part in name_parts:
+        if(part!=""):
+            length = (len(part)).to_bytes(1, byteorder='big')
+            query += length
+            print(length)
+            for ch in part:
+                print(hex(ord(ch)))
+                query += (ord(ch)).to_bytes(1, byteorder='big')
+
+            print("-------")
+    query += (0).to_bytes(1, byteorder='big')
+    print("``````````````````````````````````")
+    print(query)
+
+    return query
+
 
 def parse_name(text,entire_responce):
     i = 0
     j = i
     contains_pointer = False
     domain_name = ""
-    print("text[i] ",text[0])
+    #print("text[i] ",text[0])
     while (text[i] != 0):
 
         length = text[i]
@@ -47,11 +141,11 @@ def parse_name(text,entire_responce):
               j =i + 2
 
             contains_pointer = True
-            print("here we have",text[j:j+2])
-            print("j in here ->",j)
+           # print("here we have",text[j:j+2])
+           # print("j in here ->",j)
             i = pointer[0] & 0b0011111111111111
             #print(hex(i))
-            print("here")
+            #print("here")
             text = entire_responce
             continue
         domain_name += text[i + 1:i + length + 1].decode("utf-8") + "."
@@ -59,7 +153,7 @@ def parse_name(text,entire_responce):
 
     #if it contains pointer we should return j as number of bytes
     if(contains_pointer):
-        print("j is ",j)
+        #print("j is ",j)
         i = j
 
     if(not contains_pointer):
@@ -96,11 +190,11 @@ def parse_dns_answer2(answer,whole_responce,in_additional):
 
     i = 0
 
-    print("pointer hex = ",answer[i:i+2])
+    #print("pointer hex = ",answer[i:i+2])
     pointer = unpack("!H", answer[i:i + 2])
     i += 2
     pointer = pointer[0] & 0b0011111111111111
-    print("pointer = ", pointer)
+    #print("pointer = ", pointer)
 
     #we don't need j
     tld_name,j = parse_name(whole_responce[pointer:],whole_responce)
@@ -111,13 +205,18 @@ def parse_dns_answer2(answer,whole_responce,in_additional):
 
     fields["qtype"] = int.from_bytes(answer[i:i + 2], byteorder="big")
     i += 2
+
+    #aaaa record n# = 28
+    if(fields["qtype"] >1 and fields["qtype"]!=28):
+        in_additional = False
+
     fields["qclass"] = int.from_bytes(answer[i:i + 2], byteorder="big")
     i += 2
 
     ttl = unpack("!i", answer[i: i + 4])
     fields["ttl"] = ttl[0]
     i += 4
-    print("ttl",ttl)
+    #print("ttl",ttl)
 
     # rdlength unsigned short
     rdlength = unpack("!H", answer[i:i + 2])
@@ -131,6 +230,7 @@ def parse_dns_answer2(answer,whole_responce,in_additional):
             i+=4
             fields["ip"] = str(ord(ip[0])) + "." + str(ord(ip[1])) + "." + str(ord(ip[2])) + "." + str(ord(ip[3]))
         else:
+     #       print("rdlength = ",fields["rdlength"])
             i+=fields["rdlength"]
     else:
 
@@ -154,63 +254,243 @@ def merge_ns_and_ar(name_servers, ar_list):
 def parse_dns_answer(answer,answer_count,ns_count,additional_source_count,whole_responce):
 
     fields = {}
-    print(answer_count,ns_count,additional_source_count)
-    print("answer is -> ", answer)
+    #print(answer_count,ns_count,additional_source_count)
+    #print("answer is -> ", answer)
     i = 0
     answer_query_fields,j = parse_dns_answer_query_section(answer)
     i+=j
     print(answer_query_fields)
 
+    if(answer_count > 0):
+       answer_fields,j = parse_dns_answer2(answer[i:],whole_responce,True)
+       i+=j
+      # print("answer foundhere \n\n\n\n")
+       if("ip" in answer_fields.keys()):
+           return answer_fields,1
 
+
+       return [answer_fields],-1
     name_servers = []
     for ns_counter in range(ns_count):
+
         ns_fields,j = parse_dns_answer2(answer[i:],whole_responce,False)
         name_servers.append(ns_fields)
         i+=j
-        print(answer[i:i+3])
-        print("ns_fields",ns_fields)
 
-    print("additional resource\n\n\n\n\n")
+       # print("ns_fields",ns_fields)
+
+    #print("additional resource\n\n\n\n\n")
     ar_list = []
     for ar_counter in range(additional_source_count-1):
-        ar_fields, j = parse_dns_answer2(answer[i:], whole_responce, True)
-        ar_list.append(ar_fields)
-        i += j
-        print(answer[i:i + 3])
-        print("ns_fields", ar_fields)
+        try:
+           # print("in addional",answer[i:i + 6])
+            ar_fields, j = parse_dns_answer2(answer[i:], whole_responce, True)
+            ar_list.append(ar_fields)
+            i += j
+            #print(answer[i:i + 3])
+            #print("ns_fields", ar_fields)
+        except:
+            i+=11
 
     merge_ns_and_ar(name_servers,ar_list)
-    print("merged\n\n\n\n")
-    print(name_servers)
+   # print("merged\n\n\n\n")
+    #print(name_servers)
 
-    return name_servers
+    return name_servers,0
+
+def ip_to_bytes(ip_string):
+    ip_parts = ip_string.split(".")
+    bytes = None
+    for elem in ip_parts:
+        if(bytes == None):
+            bytes = (int(elem)).to_bytes(1,byteorder="big")
+        else:
+            bytes+=(int(elem)).to_bytes(1,byteorder="big")
+
+    return bytes
+
+def build_responce_A(original_query,cname_info,domain_name):
+    name_query_first_part = original_query[:2]
+    #print("sd", name_query_first_part)
+    # change to responce
+    second_line = int('0b1000000110000000', 2).to_bytes(2, byteorder='big')
+    #print("second line", second_line[0])
+
+    name_query_first_part += second_line
+    #print("ans h", name_query_first_part)
+    qdcount = (1).to_bytes(2, byteorder='big')
+
+    name_query_first_part += qdcount
+
+    # answer count
+    name_query_first_part += (1).to_bytes(2, byteorder="big")
+
+    # atuhority
+    name_query_first_part += (0).to_bytes(2, byteorder="big")
+
+    # addtional
+    name_query_first_part += (0).to_bytes(2, byteorder="big")
+
+    domain_parts = domain_name.split(".")
+    domain_length_bytes = 0
+
+    for elem in domain_parts:
+        domain_length_bytes += len(elem) + 1
+
+    # for null terminator
+    domain_length_bytes += 1
+
+    name_query_first_part += original_query[12:12 + domain_length_bytes - 1 + 4]
+    #print("before answer \n\n\n\n\n\n", name_query_first_part)
+
+    # pointer
+    new_query_second_part = int('0b1100000000001100', 2).to_bytes(2, byteorder='big')
+    # new_query_second_part = name_to_bytes(domain_name)
+
+    new_query_second_part += (1).to_bytes(2, byteorder="big")
+    new_query_second_part += (1).to_bytes(2, byteorder="big")
+
+    new_query_second_part += (cname_info["ttl"]).to_bytes(4, byteorder="big")
+
+    #ip length
+    new_query_second_part += (4).to_bytes(2, byteorder="big")
+
+    new_query_second_part += ip_to_bytes(cname_info["ip"])
 
 
-def iterative_query(query_original,sock,address_original):
+
+    return name_query_first_part+ new_query_second_part
+
+
+def build_responce_cname(original_query,cname_info,domain_name,data_from_root):
+    name_query_first_part = original_query[:2]
+    #print("sd",name_query_first_part)
+    #change to responce
+    second_line = int('0b1000000110000000', 2).to_bytes(2, byteorder='big')
+    #print("second line",second_line[0])
+
+    name_query_first_part+=second_line
+    #print("ans h",name_query_first_part)
+    qdcount = (1).to_bytes(2, byteorder='big')
+
+    name_query_first_part+=qdcount
+
+
+    #answer count
+    name_query_first_part+=(2).to_bytes(2,byteorder="big")
+
+    #atuhority
+    name_query_first_part+=(0).to_bytes(2,byteorder="big")
+
+    #addtional
+    name_query_first_part+=(0).to_bytes(2,byteorder="big")
+
+
+
+
+    domain_parts = domain_name.split(".")
+    domain_length_bytes = 0
+
+    for elem in domain_parts:
+        domain_length_bytes+=len(elem) +1
+
+
+    #for null terminator
+    domain_length_bytes+=1
+
+    name_query_first_part += original_query[12:12+domain_length_bytes-1+4]
+    #print("before answer \n\n\n\n\n\n",name_query_first_part)
+
+    #pointer
+    new_query_second_part = int('0b1100000000001100', 2).to_bytes(2, byteorder='big')
+   # new_query_second_part = name_to_bytes(domain_name)
+
+    new_query_second_part+=(5).to_bytes(2,byteorder="big")
+    new_query_second_part+=(1).to_bytes(2,byteorder="big")
+    new_query_second_part+=(cname_info["ttl"]).to_bytes(4,byteorder="big")
+
+    #data_length
+    cname_bytes = name_to_bytes(cname_info["tld_name"])
+    new_query_second_part+=(len(cname_bytes)).to_bytes(2,byteorder="big")
+
+    pointer_for_second = (len(name_query_first_part+new_query_second_part) | 0b1100000000000000) .to_bytes(2,byteorder="big")
+    #print("pointer second",bytes(pointer_for_second))
+    #print(bin(len(name_query_first_part+new_query_second_part)-1 | 0b1100000000000000))
+    #name_itself
+    new_query_second_part+=cname_bytes
+
+    #------------------------------------------------------------------------
+    #cnmae info
+    #new_query_second_part+=cname_bytes
+    new_query_second_part+=pointer_for_second
+    #print("here nas\n\n\n",new_query_second_part)
+    new_query_second_part+=(1).to_bytes(2,byteorder="big") #type
+    new_query_second_part+=(1).to_bytes(2,byteorder="big") #class
+
+    new_query_second_part+=(cname_info["ttl"]).to_bytes(4,byteorder="big")
+    new_query_second_part+=(4).to_bytes(2,byteorder="big")
+
+    #ip to bytes
+    new_query_second_part+=ip_to_bytes(cname_info["ip"])
+
+    full_recponse = name_query_first_part + new_query_second_part
+    #print(full_recponse)
+
+    return full_recponse
+
+
+
+
+
+
+
+
+
+def iterative_query(query_original,sock,address_original,name_original,id_original):
+
     sock_client_root = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock_client_root.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     addr_root = ("192.33.4.12", 53)
     sent = sock_client_root.sendto(query_original, addr_root)
+    print("sending to root \n")
     data_from_root, address_root = sock_client_root.recvfrom(buffer_size)
 
-
+    query_original_copy = query_original
     data_in_shorts_root = unpack("!1H2B4H", data_from_root[0:12])
     header_root = parse_dns_header(data_in_shorts_root)
+
 
    # sock.sendto(data_from_root, address_original)
 
     ans = header_root["ancount"]
-    print("ans ->\n\n\n",ans)
+
 
     name_servers = None
-    c = 0
-    while(ans==0):
 
-         if (c == 1):
-            print("sd")
-         name_servers = parse_dns_answer(data_from_root[12:], header_root["ancount"], header_root["nscount"], header_root["arcount"],
+
+    last_ip = 0
+    cname = False
+    while(True):
+
+
+         name_servers,res = parse_dns_answer(data_from_root[12:], header_root["ancount"], header_root["nscount"], header_root["arcount"],
                          data_from_root)
-         ip = name_servers[0]["ip"]
+
+         print("name_servers \n",name_servers)
+         if(res == 1):
+             break
+
+         if(res == -1):
+            #print("cname here\n\n",name_servers[0]["ns_name"])
+            cname = True
+            new_query = query_original[:12] +   replace_name(name_servers[0]["ns_name"],query_original[12:])
+            query_original = new_query
+           # print(new_query)
+            ip = last_ip
+         else:
+
+            ip = name_servers[0]["ip"]
+         last_ip = ip
 
          addr_root = (ip, 53)
          sent = sock_client_root.sendto(query_original, addr_root)
@@ -218,39 +498,22 @@ def iterative_query(query_original,sock,address_original):
          data_in_shorts_root = unpack("!1H2B4H", data_from_root[0:12])
          header_root = parse_dns_header(data_in_shorts_root)
          ans = header_root["ancount"]
-        # sock.sendto(data_from_root, address_original)
-         c+=1
+       #  sock.sendto(data_from_root, address_original)
 
+    if(cname):
+      print("needed cname\n",name_servers)
+      resp = build_responce_cname(query_original_copy,name_servers,name_original,data_from_root)
 
-    print("here\n\n\n\n\n\n\n\n\n\n")
-    ip = name_servers[0]["ip"]
-    print("ip name server google ",ip)
-    addr_root = (ip, 53)
-    sent = sock_client_root.sendto(query_original, addr_root)
-    data_from_root, address_root = sock_client_root.recvfrom(buffer_size)
-    data_in_shorts_root = unpack("!1H2B4H", data_from_root[0:12])
-    header_root = parse_dns_header(data_in_shorts_root)
+      sock.sendto(resp, address_original)
+    else:
+      print("A record\n")
+      sock.sendto(data_from_root, address_original)
 
-    i = 12
-    answer_query_fields, j = parse_dns_answer_query_section(data_from_root[12:])
-    i += j
-    name_servers = parse_dns_answer2(data_from_root[i:], data_from_root,True)
-
-    sock.sendto(data_from_root, address_original)
-    print("answern\n\n",name_servers)
 
     #returns dictionary
 def parse_dns_header(header_in_shorts):
     fields = {}
 
-    """
-          fields["opcode"] = (header_in_shorts[1]>>3) - fields["qr"] * 32
-    fields["aa"] = header_in_shorts[1] &0b00000100
-    fields['tc'] = header_in_shorts[1] & 0b00000010
-    fields["rd"] = header_in_shorts[1] & 0b00000001
-
-    fields["ra"] = header_in_shorts[2] &  0b10000000
-    """
 
     print(header_in_shorts)
     fields["id"] = header_in_shorts[0]
@@ -281,7 +544,7 @@ def parse_dns_header(header_in_shorts):
 
 
 
-def run_dns_server(configpath = None):
+def run_dns_server(configpath):
     # your code here
     #print(configpath)
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -294,31 +557,36 @@ def run_dns_server(configpath = None):
     while True:
         query_original, address_original = sock.recvfrom(buffer_size)
 
-        print("received data",query_original)
+
+
 
 
 
         query_original_in_shorts = unpack("!1H2B4H", query_original[0:12])
 
-        parse_dns_header(query_original_in_shorts)
-        iterative_query(query_original,sock,address_original)
+        header_fields =  parse_dns_header(query_original_in_shorts)
+
+        fields =parse_dns_question(query_original[12:])
+        name = fields["domain_name"]
+        exists = os.path.isfile('./zone_files/'+name+"conf")
+        if(exists):
+            zone = easyzone.zone_from_file(name,'./zone_files/'+name+"conf")
+            ips = zone.names[name].records('A').items
+            #p = zone.names["www."].items
+            info = {"ttl":zone.names[name].ttl,"ip":ips[0]}
+
+            print("file is in the zone\n")
+
+            resp = build_responce_A(query_original,info,name)
+            sock.sendto(resp,address_original)
+
+        else:
+         print("start iterative search\n")
+         iterative_query(query_original,sock,address_original,fields["domain_name"],header_fields["id"])
        # sock.sendto(data_from_root, address_original)
-
-
-
-
-
-      #  print(data2)
-
-
-
-
-
-
-
 # do not change!
 if __name__ == '__main__':
-    #configpath = sys.argv[1]
-    configpath = "sd"
-    run_dns_server()
-    #run_dns_server(configpath)
+    configpath = sys.argv[1]
+
+    run_dns_server(configpath)
+    run_dns_server(configpath)

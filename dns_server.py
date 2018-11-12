@@ -6,7 +6,7 @@ import os
 from easyzone import easyzone
 
 ip = "127.0.0.1"
-port = 53
+port = 5353
 buffer_size = 2048
 
 def name_to_bytes(name):
